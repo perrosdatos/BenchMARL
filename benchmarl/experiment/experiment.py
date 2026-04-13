@@ -686,6 +686,7 @@ class Experiment(CallbackNotifier):
             reset_batch = self.rollout_env.reset()
 
         # Training/collection iterations
+        last_mean_return_str = "nan"
         for _ in range(
             self.n_iters_performed, self.config.get_max_n_iters(self.on_policy)
         ):
@@ -722,7 +723,12 @@ class Experiment(CallbackNotifier):
                 task=self.task,
                 step=self.n_iters_performed,
             )
-            pbar.set_description(f"mean return = {self.mean_return}", refresh=False)
+            if isinstance(self.mean_return, torch.Tensor):
+                if self.mean_return.numel() > 0:
+                    last_mean_return_str = f"{self.mean_return.mean().item():.2f}"
+            elif self.mean_return == self.mean_return: # not np.nan
+                last_mean_return_str = f"{self.mean_return:.2f}"
+            pbar.set_description(f"mean return = {last_mean_return_str}", refresh=False)
 
             # Callback
             self._on_batch_collected(batch)
@@ -742,14 +748,17 @@ class Experiment(CallbackNotifier):
                 group_buffer.extend(group_batch.to(group_buffer.storage.device))
 
                 training_tds = []
-                for _ in range(self.config.n_optimizer_steps(self.on_policy)):
-                    for _ in range(
-                        -(
+                total_opt_steps = self.config.n_optimizer_steps(self.on_policy)
+                n_minibatches = -(
                             -self.config.train_batch_size(self.on_policy)
                             // self.config.train_minibatch_size(self.on_policy)
                         )
-                    ):
+                # print(f"\\n[DEBUG] Starting optimizer loop for group: {group} ({total_opt_steps} epochs, {n_minibatches} minibatches per epoch)")
+                for epoch in range(total_opt_steps):
+                    for mb in range(n_minibatches):
                         training_tds.append(self._optimizer_loop(group))
+                    # print(f"\\r[DEBUG] Optimizer Epoch {epoch+1}/{total_opt_steps} completed.", end="")
+                # print("\\n[DEBUG] Optimizer loops completed.")
                 training_td = torch.stack(training_tds)
                 self.logger.log_training(
                     group, training_td, step=self.n_iters_performed
@@ -904,17 +913,24 @@ class Experiment(CallbackNotifier):
             if self.config.evaluation_deterministic_actions
             else ExplorationType.RANDOM
         ):
+            #print("\\n[DEBUG] Starting evaluation loop.")
+            callback_state = {"step": 0}
             if self.task.has_render(self.test_env) and self.config.render:
+                #print("[DEBUG] Rendering is enabled. Creating callback.")
                 video_frames = []
 
                 def callback(env, td):
+                    callback_state["step"] += 1
+                    #print(f"\\r[DEBUG] Evaluation rollout step: {callback_state['step']} completed...", end="")
                     video_frames.append(
                         self.task.__class__.render_callback(self, env, td)
                     )
 
             else:
                 video_frames = None
-                callback = None
+                def callback(env, td):
+                    callback_state["step"] += 1
+                    print(f"\\r[DEBUG] Evaluation rollout step: {callback_state['step']} completed...", end="")
 
             if self.test_env.batch_size == ():
                 rollouts = []
@@ -937,7 +953,9 @@ class Experiment(CallbackNotifier):
                     break_when_any_done=False,
                     # We are running vectorized evaluation we do not want it to stop when just one env is done
                 )
+                print("\\n[DEBUG] Rollout unbinding.")
                 rollouts = list(rollouts.unbind(0))
+        print("\\n[DEBUG] Rollouts completed.")
         evaluation_time = time.time() - evaluation_start
         self.logger.log(
             {"timers/evaluation_time": evaluation_time}, step=self.n_iters_performed

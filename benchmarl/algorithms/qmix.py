@@ -90,7 +90,7 @@ class Qmix(Algorithm):
         actor_output_spec = Composite(
             {
                 group: Composite(
-                    {"action_value": Unbounded(shape=logits_shape)},
+                    {"action_value": Unbounded(device=self.device, shape=logits_shape)},
                     shape=(n_agents,),
                 )
             }
