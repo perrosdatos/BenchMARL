@@ -69,7 +69,7 @@ class LuxTorchRLEnv(EnvBase):
         agents_obs_spec = Composite({
             "observation": Bounded(
                 low=-1.0, high=1.0, # Approximate bounds
-                shape=torch.Size([*self.batch_size, self.max_units, 9, self.map_width, self.map_height]),
+                shape=torch.Size([*self.batch_size, self.max_units, 12, self.map_width, self.map_height]),
                 dtype=torch.float32,
                 device=self.device
             ),
@@ -202,15 +202,35 @@ class LuxTorchRLEnv(EnvBase):
                 grid[op_mask, 1, x_vals[op_mask], y_vals[op_mask]] = 1.0
                 grid[my_mask, 2, x_vals[my_mask], y_vals[my_mask]] = e_vals[my_mask] / 400.0
 
-        # Now we create per-agent observation (B, 16, 9, 24, 24)
-        agent_obs = np.zeros((b_size, self.max_units, 9, self.map_width, self.map_height), dtype=np.float32)
+        # Now we create per-agent observation (B, 16, 12, 24, 24)
+        agent_obs = np.zeros((b_size, self.max_units, 12, self.map_width, self.map_height), dtype=np.float32)
+        
+        steps_val = np.asarray(self._get_v(jax_obs["player_0"], "steps"))
+        p0_pts = self._get_v(jax_obs["player_0"], "team_points")
         
         for u in range(self.max_units):
             agent_obs[:, u, :8, :, :] = grid
-            valid_active = []
+            
+            for b in range(b_size):
+                t = team_ids[b]
+                # Ch 10: Timeline (Urgency)
+                agent_obs[b, u, 10, :, :] = steps_val[b] / float(self.max_steps * self.match_count)
+                # Ch 11: Score Differential
+                m_pts = float(np.asarray(p0_pts)[b, t] if p0_pts is not None else 0.0)
+                e_pts = float(np.asarray(p0_pts)[b, 1-t] if p0_pts is not None else 0.0)
+                agent_obs[b, u, 11, :, :] = np.clip((m_pts - e_pts) / 50.0, -1.0, 1.0)
+                
             for t in [0, 1]:
                  b_mask = (team_ids == t) & m[:, t, u]
+                 # Ch 8: Self Indicator
                  agent_obs[b_mask, u, 8, pos[b_mask, t, u, 0], pos[b_mask, t, u, 1]] = 1.0
+                 # Ch 9: Ghost Coordinate Tracking
+                 if hasattr(self, "last_unit_pos"):
+                     lx = self.last_unit_pos[b_mask, t, u, 0]
+                     ly = self.last_unit_pos[b_mask, t, u, 1]
+                     valid_mask = (lx >= 0) & (ly >= 0) & (lx < self.map_width) & (ly < self.map_height)
+                     valid_b = np.where(b_mask)[0][valid_mask]
+                     agent_obs[valid_b, u, 9, lx[valid_mask], ly[valid_mask]] = 1.0
                  
         return agent_obs
 
@@ -236,6 +256,7 @@ class LuxTorchRLEnv(EnvBase):
             self.known_relic_mask = np.zeros((self.batch_size[0], self.max_units * 3), dtype=bool) 
             self.known_relic_pos = np.zeros((self.batch_size[0], self.max_units * 3, 2), dtype=np.int32)
             self.spawn_pos = np.zeros((self.batch_size[0], 2), dtype=np.int32)
+            self.last_unit_pos = np.full((self.batch_size[0], 2, self.max_units, 2), -1, dtype=np.int32)
 
         b_size = self.batch_size[0]
         reset_indices = reset_mask.nonzero(as_tuple=True)[0].cpu().numpy()
@@ -290,6 +311,7 @@ class LuxTorchRLEnv(EnvBase):
                     self.spawn_pos[b_idx] = pos_np[b_idx, t, 0]
                 else:
                     self.spawn_pos[b_idx] = 0
+                self.last_unit_pos[b_idx] = -1
 
         # Build output TensorDict
         # team_ids: (B,)
@@ -487,6 +509,11 @@ class LuxTorchRLEnv(EnvBase):
         action_mask[~active_units, 0] = True
         
         obs_array = self._build_spatial_observation(self.jax_obs, t_ids_np, None)
+        
+        # Buffer coordinates for Ghost Trace (Ch 9) next step
+        pos_cache = self._get_v(self._get_v(self.jax_obs["player_0"], "units"), "position")
+        if pos_cache is not None:
+            self.last_unit_pos = np.asarray(pos_cache, dtype=np.int32).copy()
         
         # Create output TensorDict
         device = self.device
