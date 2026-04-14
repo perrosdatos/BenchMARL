@@ -185,6 +185,7 @@ class Qmix(Algorithm):
             in_keys = [(group, "chosen_action_value"), global_state_key]
         else:
             group_observation_keys = list(self.observation_spec[group].keys(True, True))
+            group_observation_keys = [k for k in group_observation_keys if k != "action_mask" and (not isinstance(k, tuple) or k[-1] != "action_mask")]
             if len(group_observation_keys) > 1:
                 raise ValueError(
                     "QMIX called without a global state and multiple observation keys, currently the mixer"

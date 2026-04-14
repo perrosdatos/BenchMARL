@@ -930,7 +930,7 @@ class Experiment(CallbackNotifier):
                 video_frames = None
                 def callback(env, td):
                     callback_state["step"] += 1
-                    print(f"\\r[DEBUG] Evaluation rollout step: {callback_state['step']} completed...", end="")
+                    #print(f"\\r[DEBUG] Evaluation rollout step: {callback_state['step']} completed...", end="")
 
             if self.test_env.batch_size == ():
                 rollouts = []
@@ -953,9 +953,9 @@ class Experiment(CallbackNotifier):
                     break_when_any_done=False,
                     # We are running vectorized evaluation we do not want it to stop when just one env is done
                 )
-                print("\\n[DEBUG] Rollout unbinding.")
+                #print("\\n[DEBUG] Rollout unbinding.")
                 rollouts = list(rollouts.unbind(0))
-        print("\\n[DEBUG] Rollouts completed.")
+        #print("\\n[DEBUG] Rollouts completed.")
         evaluation_time = time.time() - evaluation_start
         self.logger.log(
             {"timers/evaluation_time": evaluation_time}, step=self.n_iters_performed
