@@ -1,4 +1,5 @@
 import copy
+import torch
 from typing import Callable, Dict, List, Optional
 
 from torchrl.data import Composite, UnboundedContinuous, Categorical, Bounded
@@ -69,6 +70,24 @@ class LuxClass(TaskClass):
             return env.render(mode="rgb_array")
         except TypeError:
             return env.render()
+
+    @staticmethod
+    def log_info(batch) -> Dict[str, float]:
+        to_log = {}
+        # batch represents the episodic rollout TensorDict
+        if "next" in batch.keys() and "info" in batch.get("next").keys():
+            info_td = batch.get(("next", "info"))
+            if "agent_points" in info_td.keys() and "opponent_points" in info_td.keys():
+                done = batch.get(("next", "done"))
+                # Filter points where the episode ends
+                if done.any():
+                    agent_pts = info_td.get("agent_points")[done]
+                    opp_pts = info_td.get("opponent_points")[done]
+                    if agent_pts.numel() > 0:
+                        to_log["collection/end_episode_agent_points"] = agent_pts.to(torch.float).mean().item()
+                        to_log["collection/end_episode_opponent_points"] = opp_pts.to(torch.float).mean().item()
+                        to_log["collection/end_episode_win_margin"] = (agent_pts - opp_pts).to(torch.float).mean().item()
+        return to_log
 
     @staticmethod
     def env_name() -> str:

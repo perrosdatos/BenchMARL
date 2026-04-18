@@ -80,8 +80,13 @@ class LuxTorchRLEnv(EnvBase):
                 device=self.device
             )
         }, shape=torch.Size([*self.batch_size, self.max_units]))
-        
-        self.observation_spec = Composite({"agents": agents_obs_spec}, shape=self.batch_size)
+        self.observation_spec = Composite({
+            "agents": agents_obs_spec,
+            "info": Composite({
+                "agent_points": UnboundedContinuous(shape=torch.Size([*self.batch_size, 1]), device=self.device),
+                "opponent_points": UnboundedContinuous(shape=torch.Size([*self.batch_size, 1]), device=self.device)
+            }, shape=self.batch_size)
+        }, shape=self.batch_size)
         
         self.reward_spec = Composite({
             "agents": Composite({
@@ -342,6 +347,10 @@ class LuxTorchRLEnv(EnvBase):
             "done": torch.zeros((b_size, 1), dtype=torch.bool, device=self.device),
             "terminated": torch.zeros((b_size, 1), dtype=torch.bool, device=self.device),
             "truncated": torch.zeros((b_size, 1), dtype=torch.bool, device=self.device),
+            "info": TensorDict({
+                "agent_points": torch.zeros((b_size, 1), dtype=torch.float32, device=self.device),
+                "opponent_points": torch.zeros((b_size, 1), dtype=torch.float32, device=self.device)
+            }, batch_size=torch.Size([b_size])),
         }, batch_size=torch.Size([b_size]))
         
         return td
@@ -527,12 +536,37 @@ class LuxTorchRLEnv(EnvBase):
             "truncated": torch.tensor(trunc_np, device=device).unsqueeze(-1).unsqueeze(-1).expand(-1, self.max_units, 1)
         }, batch_size=torch.Size([b_size, self.max_units]))
         
+        if not hasattr(self, "max_agent_points"):
+             self.max_agent_points = np.zeros(b_size, dtype=np.float32)
+             self.max_opp_points = np.zeros(b_size, dtype=np.float32)
+
+        opp_pts_np = np.zeros(b_size, dtype=np.float32)
+        for b in range(b_size):
+            t = t_ids_np[b]
+            p0_dict = self._get_v(self.jax_obs["player_0"], "team_points")
+            opp_pts_np[b] = float(np.asarray(p0_dict)[b, 1-t] if p0_dict is not None else 0.0)
+            
+            # Catch the highest score before JAX auto-resets the array to 0
+            self.max_agent_points[b] = max(self.max_agent_points[b], self.prev_points[b])
+            self.max_opp_points[b] = max(self.max_opp_points[b], opp_pts_np[b])
+
         td = TensorDict({
             "agents": agents_td,
             "done": torch.tensor(done_np, device=device).unsqueeze(-1),
             "terminated": torch.tensor(term_np, device=device).unsqueeze(-1),
             "truncated": torch.tensor(trunc_np, device=device).unsqueeze(-1),
+            "info": TensorDict({
+                "agent_points": torch.tensor(self.max_agent_points, dtype=torch.float32, device=device).unsqueeze(-1).clone(),
+                "opponent_points": torch.tensor(self.max_opp_points, dtype=torch.float32, device=device).unsqueeze(-1).clone()
+            }, batch_size=torch.Size([b_size])),
         }, batch_size=torch.Size([b_size]))
+        
+        # Reset trackers for the next episode where done
+        for b in range(b_size):
+            if done_np[b]:
+                self.max_agent_points[b] = 0.0
+                self.max_opp_points[b] = 0.0
+                
         
         return td
 
