@@ -1,0 +1,8 @@
+# Task configuration for Lux AI Match (V2 Engine sandbox)
+max_steps: 150
+match_count: 5
+num_teams: 2
+max_units: 16
+map_width: 24
+map_height: 24
+reward_version: v2

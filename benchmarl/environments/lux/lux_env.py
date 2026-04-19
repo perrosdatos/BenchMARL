@@ -32,6 +32,7 @@ class LuxTorchRLEnv(EnvBase):
         self.map_width = kwargs.get("map_width", 24)
         self.map_height = kwargs.get("map_height", 24)
         self.reward_scaling = kwargs.get("reward_scaling", 0.1)
+        self.reward_version = kwargs.get("reward_version", "v1")
         
         self.env_params = EnvParams(
             max_steps_in_match=self.max_steps - 1, 
@@ -69,7 +70,7 @@ class LuxTorchRLEnv(EnvBase):
         agents_obs_spec = Composite({
             "observation": Bounded(
                 low=-1.0, high=1.0, # Approximate bounds
-                shape=torch.Size([*self.batch_size, self.max_units, 12, self.map_width, self.map_height]),
+                shape=torch.Size([*self.batch_size, self.max_units, 14, self.map_width, self.map_height]),
                 dtype=torch.float32,
                 device=self.device
             ),
@@ -126,6 +127,21 @@ class LuxTorchRLEnv(EnvBase):
             if isinstance(o, dict):
                 return o.get(k)
             return None
+
+    def _build_pseudo_obs(self, jax_obs, player_id: int, b: int):
+        p_key = f"player_{player_id}"
+        p_obs = jax_obs[p_key]
+        _v = self._get_v
+        return {
+            "units_mask": np.asarray(_v(p_obs, "units_mask"))[b].tolist(),
+            "units": {
+                "position": np.asarray(_v(_v(p_obs, "units"), "position"))[b].tolist(),
+                "energy": np.asarray(_v(_v(p_obs, "units"), "energy"))[b].tolist()
+            },
+            "relic_nodes": np.asarray(_v(p_obs, "relic_nodes"))[b].tolist(),
+            "relic_nodes_mask": np.asarray(_v(p_obs, "relic_nodes_mask"))[b].tolist(),
+            "team_points": np.asarray(_v(p_obs, "team_points"))[b].tolist()
+        }
 
     def _build_spatial_observation(self, jax_obs, team_ids: np.ndarray, units_pos: np.ndarray) -> np.ndarray:
         # We compute the exact same spatial grid as SB3, then slice for each agent
@@ -207,11 +223,17 @@ class LuxTorchRLEnv(EnvBase):
                 grid[op_mask, 1, x_vals[op_mask], y_vals[op_mask]] = 1.0
                 grid[my_mask, 2, x_vals[my_mask], y_vals[my_mask]] = e_vals[my_mask] / 400.0
 
-        # Now we create per-agent observation (B, 16, 12, 24, 24)
-        agent_obs = np.zeros((b_size, self.max_units, 12, self.map_width, self.map_height), dtype=np.float32)
+        # Now we create per-agent observation (B, 16, 14, 24, 24)
+        agent_obs = np.zeros((b_size, self.max_units, 14, self.map_width, self.map_height), dtype=np.float32)
         
         steps_val = np.asarray(self._get_v(jax_obs["player_0"], "steps"))
         p0_pts = self._get_v(jax_obs["player_0"], "team_points")
+        
+        # Inject Memory Decay Tracking (Update last seen times for all tiles seen in current step)
+        if hasattr(self, "last_seen_map"):
+            step_t = steps_val[:, None, None] # Broadcast B -> (B, 1, 1)
+            self.last_seen_map[:, 0] = np.where(sm0, step_t.astype(np.float32), self.last_seen_map[:, 0])
+            self.last_seen_map[:, 1] = np.where(sm1, step_t.astype(np.float32), self.last_seen_map[:, 1])
         
         for u in range(self.max_units):
             agent_obs[:, u, :8, :, :] = grid
@@ -219,14 +241,34 @@ class LuxTorchRLEnv(EnvBase):
             for b in range(b_size):
                 t = team_ids[b]
                 # Ch 10: Timeline (Urgency)
-                agent_obs[b, u, 10, :, :] = steps_val[b] / float(self.max_steps * self.match_count)
+                curr_step = steps_val[b]
+                agent_obs[b, u, 10, :, :] = curr_step / float(self.max_steps * self.match_count)
                 # Ch 11: Score Differential
                 m_pts = float(np.asarray(p0_pts)[b, t] if p0_pts is not None else 0.0)
                 e_pts = float(np.asarray(p0_pts)[b, 1-t] if p0_pts is not None else 0.0)
                 agent_obs[b, u, 11, :, :] = np.clip((m_pts - e_pts) / 50.0, -1.0, 1.0)
+                # Ch 12: Memory Decay Channel (Stigmergic Exploration)
+                if hasattr(self, "last_seen_map"):
+                    agent_obs[b, u, 12, :, :] = self.last_seen_map[b, t] / max(1.0, float(curr_step))
                 
             for t in [0, 1]:
                  b_mask = (team_ids == t) & m[:, t, u]
+                 
+                 # Ch 13: Agent-level Trajectory Decay Channel (Agent Stigmergy)
+                 if hasattr(self, "agent_trajectory_map"):
+                     valid_b = np.where(b_mask)[0]
+                     curr_steps_valid = steps_val[valid_b]
+                     curr_x = pos[valid_b, t, u, 0]
+                     curr_y = pos[valid_b, t, u, 1]
+                     # Mark current step in trajectory
+                     self.agent_trajectory_map[valid_b, t, u, curr_x, curr_y] = curr_steps_valid.astype(np.float32)
+                     
+                     # Extract for Channel 14
+                     active_b = np.where(team_ids == t)[0]
+                     curr_steps_t = steps_val[active_b]
+                     div_factor = np.maximum(1.0, curr_steps_t)[:, None, None]
+                     agent_obs[active_b, u, 13, :, :] = self.agent_trajectory_map[active_b, t, u, :, :] / div_factor
+                     
                  # Ch 8: Self Indicator
                  agent_obs[b_mask, u, 8, pos[b_mask, t, u, 0], pos[b_mask, t, u, 1]] = 1.0
                  # Ch 9: Ghost Coordinate Tracking
@@ -234,8 +276,8 @@ class LuxTorchRLEnv(EnvBase):
                      lx = self.last_unit_pos[b_mask, t, u, 0]
                      ly = self.last_unit_pos[b_mask, t, u, 1]
                      valid_mask = (lx >= 0) & (ly >= 0) & (lx < self.map_width) & (ly < self.map_height)
-                     valid_b = np.where(b_mask)[0][valid_mask]
-                     agent_obs[valid_b, u, 9, lx[valid_mask], ly[valid_mask]] = 1.0
+                     valid_b2 = np.where(b_mask)[0][valid_mask]
+                     agent_obs[valid_b2, u, 9, lx[valid_mask], ly[valid_mask]] = 1.0
                  
         return agent_obs
 
@@ -257,11 +299,39 @@ class LuxTorchRLEnv(EnvBase):
             # Mapping state history
             self.prev_points = np.zeros(self.batch_size[0], dtype=np.float32)
             self.prev_energy = np.zeros((self.batch_size[0], self.max_units), dtype=np.float32)
+            self.last_seen_map = np.zeros((self.batch_size[0], 2, self.map_width, self.map_height), dtype=np.float32)
             self.prev_visible_count = np.zeros(self.batch_size[0], dtype=np.int32)
             self.known_relic_mask = np.zeros((self.batch_size[0], self.max_units * 3), dtype=bool) 
             self.known_relic_pos = np.zeros((self.batch_size[0], self.max_units * 3, 2), dtype=np.int32)
             self.spawn_pos = np.zeros((self.batch_size[0], 2), dtype=np.int32)
             self.last_unit_pos = np.full((self.batch_size[0], 2, self.max_units, 2), -1, dtype=np.int32)
+            self.agent_trajectory_map = np.zeros((self.batch_size[0], 2, self.max_units, self.map_width, self.map_height), dtype=np.float32)
+
+        if getattr(self, "reward_version", "v1") == "v2":
+            if not hasattr(self, "opp_agents"):
+                self.opp_agents = [None] * self.batch_size[0]
+                self.rulebased_agent_class = None
+                
+                import sys
+                import os
+                moth_dir = "/home/carlos/Documents/github/msc_ai_thesis_marl_lux"
+                if moth_dir not in sys.path:
+                    sys.path.append(os.path.abspath(moth_dir))
+                try:
+                    from agent import Agent
+                    self.rulebased_agent_class = Agent
+                except ImportError:
+                    pass
+
+            if getattr(self, "rulebased_agent_class", None) is not None:
+                env_cfg_pseudo = {"max_units": self.max_units, "map_width": self.map_width, "map_height": self.map_height}
+                if reset_mask.any():
+                    rm_np = reset_mask.cpu().numpy()
+                    team_ids_np = self.team_ids.cpu().numpy()
+                    for b in range(self.batch_size[0]):
+                        if rm_np[b] or self.opp_agents[b] is None:
+                            opp_player_str = "player_1" if team_ids_np[b] == 0 else "player_0"
+                            self.opp_agents[b] = self.rulebased_agent_class(opp_player_str, env_cfg_pseudo)
 
         b_size = self.batch_size[0]
         reset_indices = reset_mask.nonzero(as_tuple=True)[0].cpu().numpy()
@@ -309,6 +379,7 @@ class LuxTorchRLEnv(EnvBase):
                 
                 self.known_relic_mask[b_idx] = False
                 self.known_relic_pos[b_idx] = 0
+                self.agent_trajectory_map[b_idx] = 0.0
                 
                 pos_o = self._get_v(self._get_v(new_reset_obs["player_0"], "units"), "position")
                 if pos_o is not None:
@@ -368,8 +439,18 @@ class LuxTorchRLEnv(EnvBase):
         zeros_sap = np.zeros((b_size, self.max_units, 2), dtype=np.int32)
         action_3d = np.concatenate([actions[..., None], zeros_sap], axis=-1)
         
+        
         jax_actions_0 = np.zeros_like(action_3d)
         jax_actions_1 = np.zeros_like(action_3d)
+        
+        if getattr(self, "reward_version", "v1") == "v2" and getattr(self, "rulebased_agent_class", None) is not None:
+            self.opp_actions = np.zeros((b_size, self.max_units), dtype=np.int32)
+            steps_val = np.asarray(self._get_v(self.jax_obs["player_0"], "steps"))
+            for b in range(b_size):
+                opp_player_id = 1 if t_ids_np[b] == 0 else 0
+                pseudo_obs = self._build_pseudo_obs(self.jax_obs, opp_player_id, b)
+                act_col = self.opp_agents[b].act(int(steps_val[b]), pseudo_obs)
+                self.opp_actions[b] = act_col[:, 0]
         
         for b in range(b_size):
             if t_ids_np[b] == 0:
@@ -389,7 +470,6 @@ class LuxTorchRLEnv(EnvBase):
             "player_0": jnp.array(jax_actions_0, dtype=jnp.int32),
             "player_1": jnp.array(jax_actions_1, dtype=jnp.int32)
         }
-        
         self.rng, _rng = jax.random.split(self.rng)
         rng_batch = jax.random.split(_rng, b_size)
         
@@ -488,23 +568,41 @@ class LuxTorchRLEnv(EnvBase):
                  current_team_pos[b] = u_pos_np[b, t]
              
         # Execute Shaping 
-        shaped_reward, reward_components = compute_shaped_rewards(
-            current_team_mask=current_team_mask,
-            current_team_pos=current_team_pos,
-            actions=actions,
-            delta_points=delta_pts,
-            delta_visible=delta_vis,
-            delta_energy=delta_en,
-            spawn_pos=self.spawn_pos,
-            known_relic_mask=self.known_relic_mask,
-            known_relic_pos=self.known_relic_pos,
-            step_count=steps
-        )
+        if getattr(self, "reward_version", "v1") == "v2":
+            from benchmarl.environments.lux.reward_exploration import compute_shaped_rewards_v2
+            shaped_global, shaped_local, reward_components = compute_shaped_rewards_v2(
+                current_team_mask=current_team_mask,
+                current_team_pos=current_team_pos,
+                actions=actions,
+                delta_points=delta_pts,
+                delta_visible=delta_vis,
+                delta_energy=delta_en,
+                spawn_pos=self.spawn_pos,
+                known_relic_mask=self.known_relic_mask,
+                known_relic_pos=self.known_relic_pos,
+                step_count=steps
+            )
+        else:
+            shaped_reward, reward_components = compute_shaped_rewards(
+                current_team_mask=current_team_mask,
+                current_team_pos=current_team_pos,
+                actions=actions,
+                delta_points=delta_pts,
+                delta_visible=delta_vis,
+                delta_energy=delta_en,
+                spawn_pos=self.spawn_pos,
+                known_relic_mask=self.known_relic_mask,
+                known_relic_pos=self.known_relic_pos,
+                step_count=steps
+            )
         self.last_reward_components = reward_components
         
         for b in range(b_size):
-             # Distribute calculated team shaped-reward globally array (agents broadcast natively)
-             r_np[b, :] = shaped_reward[b] * self.reward_scaling
+             if getattr(self, "reward_version", "v1") == "v2":
+                 # Distribute calculated team shaped-reward globally array + the local agent specific scores!
+                 r_np[b, :] = (shaped_global[b] + shaped_local[b, :]) * self.reward_scaling
+             else:
+                 r_np[b, :] = shaped_reward[b] * self.reward_scaling
              
         done_np = term_np | trunc_np
         

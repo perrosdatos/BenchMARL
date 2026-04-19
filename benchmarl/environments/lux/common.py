@@ -98,6 +98,7 @@ class LuxTask(Task):
     """Enum for Lux tasks."""
 
     MATCH = None
+    MATCH_V2 = None
 
     @staticmethod
     def associated_class():

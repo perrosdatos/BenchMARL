@@ -42,7 +42,7 @@ def main():
     
     # 1. Initialize Wrapper Environment (single instance for debugging)
     # Using TorchRL wrapper
-    env = LuxTorchRLEnv(batch_size=1, max_steps=max_steps, match_count=match_count, seed=1994)
+    env = LuxTorchRLEnv(batch_size=1, max_steps=max_steps, match_count=match_count, seed=1994, reward_version="v2")
     
     # 2. Reset
     print("\n--- Resetting Environment ---")
