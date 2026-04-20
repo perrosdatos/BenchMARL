@@ -149,7 +149,7 @@ def compute_shaped_rewards_v2(
     shaped_local = np.zeros((batch_size, max_units), dtype=np.float32)
     
     components = {
-        "base_points": delta_points.astype(np.float32),
+        "base_points": delta_points.astype(np.float32) / 10.0,
         "relic_discovery": np.zeros(batch_size, dtype=np.float32),
         "fog_discovery": np.zeros(batch_size, dtype=np.float32),
         
@@ -175,7 +175,7 @@ def compute_shaped_rewards_v2(
             pos_counts = {p: valid_pos_list.count(p) for p in set(valid_pos_list)}
             for u_idx in valid_indices:
                 if pos_counts[tuple(unit_positions[u_idx])] > 1:
-                    components["collision_penalty"][b, u_idx] = 1.0
+                    components["collision_penalty"][b, u_idx] = 1.0 / 16.0
 
         # 2. Relic Rewards (LOCAL and GLOBAL)
         seen_relic_indices = np.where(known_relic_mask[b])[0]
@@ -192,8 +192,8 @@ def compute_shaped_rewards_v2(
                 dists = np.abs(relic_coords[:, 0] - ux) + np.abs(relic_coords[:, 1] - uy)
                 min_d = np.min(dists)
                 
-                # Proximity Bonus (Distance inverted to maximize correctly, and normalized by board size)
-                components["relic_proximity"][b, u_idx] = (24.0 - min_d) / 24.0
+                # Proximity Bonus (Distance inverted to maximize correctly, and normalized by board size, / 16 for team scalar)
+                components["relic_proximity"][b, u_idx] = ((24.0 - min_d) / 24.0) / 16.0
                 
                 # Track agents near relics
                 if min_d < 3.0:
@@ -207,28 +207,27 @@ def compute_shaped_rewards_v2(
                     if ux >= 0:
                         dists = np.abs(relic_coords[:, 0] - ux) + np.abs(relic_coords[:, 1] - uy)
                         if np.min(dists) < 3.0:
-                            components["relic_farming"][b, u_idx] = dist_pts
+                            components["relic_farming"][b, u_idx] = dist_pts / 16.0
 
-            # Note: Global discovery
-            components["relic_discovery"][b] = float(len(seen_relic_indices))
+            # Note: Global discovery (Normalized assuming ~6 max relics, / 6.0)
+            components["relic_discovery"][b] = float(len(seen_relic_indices)) / 6.0
 
         # 3. Diagonal Exploration Bonus (LOCAL)
         sx, sy = spawn_pos[b]
         for u_idx in valid_indices:
             ux, uy = current_team_pos[b, u_idx]
             dist_away = float(max(abs(ux - sx), abs(uy - sy)))
-            pressure = 0.2 if len(seen_relic_indices) > 0 else 0.8
-            components["diagonal_bonus"][b, u_idx] = (dist_away / 24.0) * pressure
+            components["diagonal_bonus"][b, u_idx] = (dist_away / 24.0) / 16.0
 
         # 4. Fog Discovery (with decay) (GLOBAL)
         if len(seen_relic_indices) == 0:
             step = float(step_count[b]) if step_count is not None else 0.0
             decay = max(0.2, 1.0 - (step / 500.0)) # Decay over 500 steps
-            components["fog_discovery"][b] = float(delta_visible[b]) * decay
+            components["fog_discovery"][b] = (float(delta_visible[b]) * decay) / 50.0
 
-        # 5. Energy Bonus (LOCAL)
+        # 5. Energy Bonus (LOCAL) (Normalized max capacity = 400)
         for u_idx in valid_indices:
-             components["energy_gain"][b, u_idx] = float(delta_energy[b, u_idx])
+             components["energy_gain"][b, u_idx] = (float(delta_energy[b, u_idx]) / 400.0) / 16.0
 
         # 6. Action-based bonuses/penalties (LOCAL)
         for idx in valid_indices:
@@ -236,26 +235,26 @@ def compute_shaped_rewards_v2(
             if act == 0: # Idle
                 if delta_energy[b, idx] <= 0:
                     # Penalty for doing nothing and not farming
-                    components["stagnation_penalty"][b, idx] = 1.0
+                    components["stagnation_penalty"][b, idx] = 1.0 / 16.0
             else: # Moving
-                components["movement_bonus"][b, idx] = 1.0
+                components["movement_bonus"][b, idx] = 1.0 / 16.0
                 
         # Final reward summation (Multipliers act as tunable Hyper-Parameters here)
         shaped_global[b] = (
-            components["base_points"][b] * 1.0 +
-            components["relic_discovery"][b] * 0.1 +
-            components["fog_discovery"][b] * 0.05
+            components["base_points"][b] * 20.0 +
+            components["relic_discovery"][b] * 1.5 +
+            components["fog_discovery"][b] * 1.0
         )
         
         for u_idx in range(max_units):
             shaped_local[b, u_idx] = (
                 components["collision_penalty"][b, u_idx] * -0.1 +
-                components["diagonal_bonus"][b, u_idx] * 1.0 +
-                components["movement_bonus"][b, u_idx] * 0.002 +
-                components["relic_proximity"][b, u_idx] * 0.005 +
-                components["relic_farming"][b, u_idx] * 0.01 +
-                components["energy_gain"][b, u_idx] * 0.002 +
-                components["stagnation_penalty"][b, u_idx] * -0.05
+                components["diagonal_bonus"][b, u_idx] * (0.1 if len(seen_relic_indices) > 0 else 0.3) +
+                components["movement_bonus"][b, u_idx] * 0.5 +
+                components["relic_proximity"][b, u_idx] * 2.0 +
+                components["relic_farming"][b, u_idx] * 3.0 +
+                components["energy_gain"][b, u_idx] * 0.8 +
+                components["stagnation_penalty"][b, u_idx] * -0.2
             )
 
     return shaped_global, shaped_local, components

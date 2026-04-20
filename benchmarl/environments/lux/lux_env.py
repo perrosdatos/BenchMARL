@@ -70,7 +70,7 @@ class LuxTorchRLEnv(EnvBase):
         agents_obs_spec = Composite({
             "observation": Bounded(
                 low=-1.0, high=1.0, # Approximate bounds
-                shape=torch.Size([*self.batch_size, self.max_units, 14, self.map_width, self.map_height]),
+                shape=torch.Size([*self.batch_size, self.max_units, 16, self.map_width, self.map_height]),
                 dtype=torch.float32,
                 device=self.device
             ),
@@ -223,8 +223,8 @@ class LuxTorchRLEnv(EnvBase):
                 grid[op_mask, 1, x_vals[op_mask], y_vals[op_mask]] = 1.0
                 grid[my_mask, 2, x_vals[my_mask], y_vals[my_mask]] = e_vals[my_mask] / 400.0
 
-        # Now we create per-agent observation (B, 16, 14, 24, 24)
-        agent_obs = np.zeros((b_size, self.max_units, 14, self.map_width, self.map_height), dtype=np.float32)
+        # Now we create per-agent observation (B, 16, 16, 24, 24)
+        agent_obs = np.zeros((b_size, self.max_units, 16, self.map_width, self.map_height), dtype=np.float32)
         
         steps_val = np.asarray(self._get_v(jax_obs["player_0"], "steps"))
         p0_pts = self._get_v(jax_obs["player_0"], "team_points")
@@ -234,6 +234,16 @@ class LuxTorchRLEnv(EnvBase):
             step_t = steps_val[:, None, None] # Broadcast B -> (B, 1, 1)
             self.last_seen_map[:, 0] = np.where(sm0, step_t.astype(np.float32), self.last_seen_map[:, 0])
             self.last_seen_map[:, 1] = np.where(sm1, step_t.astype(np.float32), self.last_seen_map[:, 1])
+            
+        if hasattr(self, "known_relic_decay_map"):
+            step_t = steps_val[:, None, None]
+            for b in range(b_size):
+                p0_valid = rmask0[b]
+                for p in rn0[b][p0_valid]:
+                    self.known_relic_decay_map[b, 0, p[0], p[1]] = step_t[b, 0, 0]
+                p1_valid = rmask1[b]
+                for p in rn1[b][p1_valid]:
+                    self.known_relic_decay_map[b, 1, p[0], p[1]] = step_t[b, 0, 0]
         
         for u in range(self.max_units):
             agent_obs[:, u, :8, :, :] = grid
@@ -250,6 +260,12 @@ class LuxTorchRLEnv(EnvBase):
                 # Ch 12: Memory Decay Channel (Stigmergic Exploration)
                 if hasattr(self, "last_seen_map"):
                     agent_obs[b, u, 12, :, :] = self.last_seen_map[b, t] / max(1.0, float(curr_step))
+                # Ch 14: Relic Memory Decay Channel
+                if hasattr(self, "known_relic_decay_map"):
+                    agent_obs[b, u, 14, :, :] = self.known_relic_decay_map[b, t] / max(1.0, float(curr_step))
+                # Ch 15: Team Point Deltas (Uniform Map Scalar Projection)
+                if hasattr(self, "last_point_delta"):
+                    agent_obs[b, u, 15, :, :] = np.clip(self.last_point_delta[b] / 5.0, 0.0, 1.0)
                 
             for t in [0, 1]:
                  b_mask = (team_ids == t) & m[:, t, u]
@@ -306,6 +322,8 @@ class LuxTorchRLEnv(EnvBase):
             self.spawn_pos = np.zeros((self.batch_size[0], 2), dtype=np.int32)
             self.last_unit_pos = np.full((self.batch_size[0], 2, self.max_units, 2), -1, dtype=np.int32)
             self.agent_trajectory_map = np.zeros((self.batch_size[0], 2, self.max_units, self.map_width, self.map_height), dtype=np.float32)
+            self.known_relic_decay_map = np.zeros((self.batch_size[0], 2, self.map_width, self.map_height), dtype=np.float32)
+            self.last_point_delta = np.zeros(self.batch_size[0], dtype=np.float32)
 
         if getattr(self, "reward_version", "v1") == "v2":
             if not hasattr(self, "opp_agents"):
@@ -323,15 +341,7 @@ class LuxTorchRLEnv(EnvBase):
                 except ImportError:
                     pass
 
-            if getattr(self, "rulebased_agent_class", None) is not None:
-                env_cfg_pseudo = {"max_units": self.max_units, "map_width": self.map_width, "map_height": self.map_height}
-                if reset_mask.any():
-                    rm_np = reset_mask.cpu().numpy()
-                    team_ids_np = self.team_ids.cpu().numpy()
-                    for b in range(self.batch_size[0]):
-                        if rm_np[b] or self.opp_agents[b] is None:
-                            opp_player_str = "player_1" if team_ids_np[b] == 0 else "player_0"
-                            self.opp_agents[b] = self.rulebased_agent_class(opp_player_str, env_cfg_pseudo)
+
 
         b_size = self.batch_size[0]
         reset_indices = reset_mask.nonzero(as_tuple=True)[0].cpu().numpy()
@@ -347,6 +357,14 @@ class LuxTorchRLEnv(EnvBase):
             # Re-scramble team IDs for resetting environments!
             self.team_ids[reset_indices] = torch.randint(0, 2, (len(reset_indices),), device=self.device)
 
+            if getattr(self, "rulebased_agent_class", None) is not None:
+                env_cfg_pseudo = {"max_units": self.max_units, "map_width": self.map_width, "map_height": self.map_height}
+                rm_np = reset_mask.cpu().numpy()
+                team_ids_np = self.team_ids.cpu().numpy()
+                for b in range(self.batch_size[0]):
+                    if rm_np[b] or self.opp_agents[b] is None:
+                        opp_player_str = "player_1" if team_ids_np[b] == 0 else "player_0"
+                        self.opp_agents[b] = self.rulebased_agent_class(opp_player_str, env_cfg_pseudo)
             # Update jax_obs manually 
             # jax.tree_util.tree_map is a bit annoying with dicts representing obs, so we just do step(actions) or rebuild it.
             # For simplicity, we just use the new_reset_obs and replace slices.
@@ -380,6 +398,8 @@ class LuxTorchRLEnv(EnvBase):
                 self.known_relic_mask[b_idx] = False
                 self.known_relic_pos[b_idx] = 0
                 self.agent_trajectory_map[b_idx] = 0.0
+                self.known_relic_decay_map[b_idx] = 0.0
+                self.last_point_delta[b_idx] = 0.0
                 
                 pos_o = self._get_v(self._get_v(new_reset_obs["player_0"], "units"), "position")
                 if pos_o is not None:
@@ -615,6 +635,7 @@ class LuxTorchRLEnv(EnvBase):
         action_mask[active_units, :] = True
         action_mask[~active_units, 0] = True
         
+        self.last_point_delta = delta_pts.copy()
         obs_array = self._build_spatial_observation(self.jax_obs, t_ids_np, None)
         
         # Buffer coordinates for Ghost Trace (Ch 9) next step

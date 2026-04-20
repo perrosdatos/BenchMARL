@@ -40,7 +40,7 @@ def main():
     max_steps = 50
     match_count = 3
     
-    env = LuxTorchRLEnv(batch_size=1, max_steps=max_steps, match_count=match_count, seed=42)
+    env = LuxTorchRLEnv(batch_size=1, max_steps=max_steps, match_count=match_count, seed=42, reward_version="v2")
     td = env.reset()
     
     team_id = int(env.team_ids[0].item())
