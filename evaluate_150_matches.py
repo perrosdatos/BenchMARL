@@ -22,15 +22,7 @@ torch.manual_seed(42)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(42)
 
-# Add rulebased agent paths for the opponent
-moth_dir = "/home/carlos/Documents/github/msc_ai_thesis_marl_lux"
-sys.path.append(os.path.abspath(moth_dir))
-
-try:
-    from rulebased_agent_main import Agent
-except ImportError:
-    print(f"Warning: Could not import Agent from {moth_dir}. Make sure the path is correct.")
-    Agent = None
+# the rulebased agent is completely integrated inside BenchMARL lux_env in v2!
 
 # Import BenchMARL loader
 from benchmarl.hydra_config import load_experiment_from_hydra
@@ -206,20 +198,6 @@ def generate_html_report(df, csv_path, step_points_history, algo_name):
         
     print(f"Rich HTML Validation Report successfully generated at:\n => {html_path}")
 
-def build_pseudo_obs(base_lux, jax_obs, player_id, batch_idx):
-    p_key = f"player_{player_id}"
-    p_obs = jax_obs[p_key]
-    _v = base_lux._get_v
-    return {
-        "units_mask": _v(p_obs, "units_mask")[batch_idx].tolist(),
-        "units": {
-            "position": _v(_v(p_obs, "units"), "position")[batch_idx].tolist(),
-            "energy": _v(_v(p_obs, "units"), "energy")[batch_idx].tolist()
-        },
-        "relic_nodes": _v(p_obs, "relic_nodes")[batch_idx].tolist(),
-        "relic_nodes_mask": _v(p_obs, "relic_nodes_mask")[batch_idx].tolist(),
-        "team_points": _v(p_obs, "team_points")[batch_idx].tolist()
-    }
 
 def main():
     parser = argparse.ArgumentParser()
@@ -243,8 +221,8 @@ def main():
             overrides=[
                 f"algorithm={args.algo}",
                 "task=lux/match_v2",
-                "model=layers/cnn",
-                "model@critic_model=layers/cnn",
+                "model=layers/cnn_lux_16ch",
+                "model@critic_model=layers/cnn_lux_16ch",
                 "experiment.sampling_device=cpu",
                 "experiment.train_device=cpu",
                 "experiment.buffer_device=cpu",
@@ -275,19 +253,7 @@ def main():
              
         base_lux = env_wrapper if hasattr(env_wrapper, "opp_actions") else env.base_env
         batch_size = base_lux.batch_size[0] if base_lux.batch_size else 1
-        
-        env_cfg = {
-            "max_units": 16,
-            "map_width": 24,
-            "map_height": 24
-        }
-        
-        if Agent:
-            opp_agents_p0 = [Agent("player_0", env_cfg) for _ in range(batch_size)]
-            opp_agents_p1 = [Agent("player_1", env_cfg) for _ in range(batch_size)]
-        else:
-            print("Error: Rule-based agent missing.")
-            return
+
 
         total_matches = 150
         matches_played = 0
@@ -318,21 +284,11 @@ def main():
                     with set_exploration_type(ExplorationType.DETERMINISTIC): # Greedy decision making
                         td = policy(td)
                 
-                # Rulebased Action
-                opp_actions = np.zeros((batch_size, 16), dtype=np.int32)
-                for b in range(batch_size):
-                    opp_team_id = 1 - model_teams[b]
-                    pseudo_obs = build_pseudo_obs(base_lux, base_lux.jax_obs, opp_team_id, b)
-                    if opp_team_id == 0:
-                        opp_a = opp_agents_p0[b].act(step_obj, pseudo_obs)
-                    else:
-                        opp_a = opp_agents_p1[b].act(step_obj, pseudo_obs)
-                    opp_actions[b] = opp_a[:, 0]
-                
                 # Capture real team points from state right before any potential wiping occurs in env.step
                 current_state_pts = np.asarray(base_lux.env_state.team_points)
                 
-                base_lux.opp_actions = opp_actions
+                # We do NOT assign base_lux.opp_actions manually!
+                # lux_env.py explicitly calculates opponent actions natively under the hood during env.step()!
                 td = env.step(td)
                 
                 dones = td.get(("next", "done")).squeeze(-1)

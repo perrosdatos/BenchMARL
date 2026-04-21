@@ -77,16 +77,24 @@ class LuxClass(TaskClass):
         # batch represents the episodic rollout TensorDict
         if "next" in batch.keys() and "info" in batch.get("next").keys():
             info_td = batch.get(("next", "info"))
-            if "agent_points" in info_td.keys() and "opponent_points" in info_td.keys():
-                done = batch.get(("next", "done"))
-                # Filter points where the episode ends
-                if done.any():
+            done = batch.get(("next", "done"))
+            if done.any():
+                if "agent_points" in info_td.keys() and "opponent_points" in info_td.keys():
                     agent_pts = info_td.get("agent_points")[done]
                     opp_pts = info_td.get("opponent_points")[done]
                     if agent_pts.numel() > 0:
                         to_log["collection/end_episode_agent_points"] = agent_pts.to(torch.float).mean().item()
                         to_log["collection/end_episode_opponent_points"] = opp_pts.to(torch.float).mean().item()
                         to_log["collection/end_episode_win_margin"] = (agent_pts - opp_pts).to(torch.float).mean().item()
+                
+                # Check for any dynamic reward components injected with "rc_"
+                for key in info_td.keys():
+                    if key.startswith("rc_"):
+                        comp_name = key[3:] # Remove "rc_"
+                        comp_vals = info_td.get(key)[done]
+                        if comp_vals.numel() > 0:
+                            to_log[f"reward_components/{comp_name}"] = comp_vals.to(torch.float).mean().item()
+                            
         return to_log
 
     @staticmethod

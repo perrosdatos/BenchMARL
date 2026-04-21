@@ -7,45 +7,21 @@ import hydra
 from omegaconf import OmegaConf
 from hydra.core.global_hydra import GlobalHydra
 
+import argparse
+
 # Explicitly disable WandB mapping globally
 os.environ["WANDB_MODE"] = "disabled"
-
-# Add rulebased agent paths for the opponent
-moth_dir = "/home/carlos/Documents/github/msc_ai_thesis_marl_lux"
-sys.path.append(os.path.abspath(moth_dir))
-
-try:
-    from rulebased_agent_main import Agent
-except ImportError:
-    print(f"Warning: Could not import Agent from {moth_dir}. Make sure the path is correct.")
-    Agent = None
 
 # Import BenchMARL loader
 from benchmarl.hydra_config import load_experiment_from_hydra
 
-def build_pseudo_obs(base_lux, jax_obs, player_id=1):
-    """
-    Simulates the standard GameState dictionary for the rule-based Agent.
-    """
-    p_key = f"player_{player_id}"
-    p_obs = jax_obs[p_key]
-    
-    _v = base_lux._get_v
-    return {
-        "units_mask": _v(p_obs, "units_mask")[0].tolist(),
-        "units": {
-            "position": _v(_v(p_obs, "units"), "position")[0].tolist(),
-            "energy": _v(_v(p_obs, "units"), "energy")[0].tolist()
-        },
-        "relic_nodes": _v(p_obs, "relic_nodes")[0].tolist(),
-        "relic_nodes_mask": _v(p_obs, "relic_nodes_mask")[0].tolist(),
-        "team_points": _v(p_obs, "team_points")[0].tolist()
-    }
-
 def main():
-    # 1. Target the specific checkpoint provided
-    checkpoint_path = "/home/carlos/Documents/github/msc_ai_thesis_experiments/BenchMARL/outputs/2026-04-19/03-46-34/mappo_match_v2_cnn__bcb1bfdc_26_04_19-03_46_34/checkpoints/checkpoint_1500000.pt"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", type=str, required=True, help="Absolute path to the PyTorch checkpoint .pt file")
+    parser.add_argument("--algo", type=str, required=True, help="Algorithm used (e.g. 'mappo' or 'qmix')")
+    args, _ = parser.parse_known_args()
     
+    checkpoint_path = args.checkpoint    
     if GlobalHydra.instance().is_initialized():
         GlobalHydra.instance().clear()
 
@@ -57,7 +33,7 @@ def main():
         cfg = hydra.compose(
             config_name="config",
             overrides=[
-                "algorithm=mappo",
+                f"algorithm={args.algo}",
                 "task=lux/match_v2",
                 "model=layers/cnn",
                 "model@critic_model=layers/cnn",
@@ -65,11 +41,12 @@ def main():
                 "experiment.train_device=cpu",
                 "experiment.buffer_device=cpu",
                 "experiment.checkpoint_interval=120000",
-                "experiment.loggers=[]"
+                "experiment.loggers=[]",
+                "seed=324"
             ],
         )
 
-        print("\nLoading mapped experiment architecture...")
+        print(f"\nLoading mapped {args.algo.upper()} experiment architecture...")
         experiment = load_experiment_from_hydra(cfg, task_name="lux/match_v2")
         
         if checkpoint_path and os.path.exists(checkpoint_path):
@@ -92,19 +69,7 @@ def main():
              
         base_lux = env_wrapper if hasattr(env_wrapper, "opp_actions") else env.base_env
         
-        env_cfg = {
-            "max_units": 16,
-            "map_width": 24,
-            "map_height": 24
-        }
-        
-        if Agent:
-            opp_agent = Agent("player_1", env_cfg)
-        else:
-            print("Error: Rule-based Agent not found. Cannot run VS match.")
-            return
-            
-        print("\n--- Starting MAPPO vs Rule-based Iterative Match ---")
+        print(f"\n--- Starting {args.algo.upper()} vs Rule-based Iterative Match ---")
         
         td = env.reset()
         step = 0
@@ -116,23 +81,18 @@ def main():
             with torch.no_grad():
                 td = policy(td)
             
+            # Extract Model Actions
             model_actions = td.get(("agents", "action")).cpu().numpy()
-            
-            # Extract player 1 observation natively for Rulebased agent
-            pseudo_obs_p1 = build_pseudo_obs(base_lux, base_lux.jax_obs, player_id=1)
-            
-            opp_action_full = opp_agent.act(step, pseudo_obs_p1)
-            opp_actions = opp_action_full[:, 0] # Extract action type (16,)
-            
-            # Debug actions
-            print(f"Model actions P0 (shape {model_actions.shape}):\n{model_actions[0]}")
-            print(f"Rulebased actions P1 (shape {opp_actions.shape}):\n{opp_actions}")
-            
-            # Set opponent actions for the environment (replicating to all n_envs if needed)
-            base_lux.opp_actions = opp_actions[None, :].repeat(base_lux.batch_size[0], axis=0) 
             
             # STEP
             td = env.step(td)
+            
+            # Opponent actions are computed internally during step and saved in base_lux
+            opp_actions = base_lux.opp_actions[0] if hasattr(base_lux, "opp_actions") else "Unknown"
+            
+            # Debug actions
+            print(f"Model actions P0 (shape {model_actions.shape}):\n{model_actions[0]}")
+            print(f"Rulebased actions P1:\n{opp_actions}")
             
             # Extract stepped variables
             dones = td.get(("next", "done"))
@@ -157,8 +117,7 @@ def main():
             print(f"TorchRL Agent Shaped Reward Matrix Sum: {torch.sum(rewards[0]).item():.4f}")
             if hasattr(base_lux, "last_reward_components"):
                 for k, v in base_lux.last_reward_components.items():
-                    if np.sum(np.asarray(v)[0]) != 0.0:
-                        print(f"  - {k}: {np.sum(np.asarray(v)[0]):.4f}")
+                    print(f"  - {k}: {np.sum(np.asarray(v)[0]):.4f}")
             
             # RENDER
             unbatched_state = jax.tree_util.tree_map(lambda x: np.asarray(x[0]), base_lux.env_state)

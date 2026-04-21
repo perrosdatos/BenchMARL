@@ -139,8 +139,11 @@ def run_evaluation(version):
                 "current_team_points": float(team_pts[b]),
                 "base_points": float(np.sum(comp["base_points"][b])),
                 "collision_penalty": float(np.sum(comp["collision_penalty"][b])),
-                "diagonal_bonus": float(np.sum(comp["diagonal_bonus"][b])),
-                "movement_bonus": float(np.sum(comp["movement_bonus"][b])),
+                "diagonal_bonus": float(np.sum(comp["diagonal_bonus"][b])) if "diagonal_bonus" in comp else 0.0,
+                "dispersion_bonus": float(np.sum(comp["dispersion_bonus"][b])) if "dispersion_bonus" in comp else 0.0,
+                "overcrowding_penalty": float(np.sum(comp["overcrowding_penalty"][b])) if "overcrowding_penalty" in comp else 0.0,
+                "movement_bonus": float(np.sum(comp["movement_bonus"][b])) if "movement_bonus" in comp else 0.0,
+                "novelty_bonus": float(np.sum(comp["novelty_bonus"][b])) if "novelty_bonus" in comp else 0.0,
                 "relic_proximity": float(np.sum(comp["relic_proximity"][b])),
                 "relic_farming": float(np.sum(comp["relic_farming"][b])),
                 "relic_discovery": float(np.sum(comp["relic_discovery"][b])) if "relic_discovery" in comp else 0.0,
@@ -267,7 +270,7 @@ def generate_report(df, version):
                             color_discrete_sequence=["#FF4B4B"], template="plotly_dark")
     
     comp_cols = ["base_points", "relic_discovery", "relic_farming", "fog_discovery", "energy_gain", "collision_penalty", 
-                 "stagnation_penalty", "diagonal_bonus", "movement_bonus", "relic_proximity"]
+                 "stagnation_penalty", "diagonal_bonus", "dispersion_bonus", "overcrowding_penalty", "movement_bonus", "novelty_bonus", "relic_proximity"]
     df_melt = df.melt(id_vars=["step", "env_id"], value_vars=comp_cols, var_name="Component", value_name="Value")
     f_comp = px.box(df_melt, x="Component", y="Value", color="Component", 
                     title="Shaping Factors Density", template="plotly_dark")
@@ -329,7 +332,7 @@ def generate_report(df, version):
     ag_html = f"<div class='plot-box full'>{f_agents.to_html(full_html=False, include_plotlyjs=False)}</div>"
     
     comp_cols = ["base_points", "relic_farming", "energy_gain", "collision_penalty", 
-                 "stagnation_penalty", "diagonal_bonus", "movement_bonus", "relic_proximity"]
+                 "stagnation_penalty", "diagonal_bonus", "dispersion_bonus", "overcrowding_penalty", "movement_bonus", "novelty_bonus", "relic_proximity"]
 
     for comp in comp_cols:
         f_comp_ag = px.box(df_agents, x="active_units_count", y=comp, color="active_units_count",

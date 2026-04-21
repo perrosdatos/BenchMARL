@@ -81,12 +81,22 @@ class LuxTorchRLEnv(EnvBase):
                 device=self.device
             )
         }, shape=torch.Size([*self.batch_size, self.max_units]))
+        self.rc_keys = [
+            "fog_discovery", "novelty_bonus", "dispersion_bonus", 
+            "relic_proximity", "relic_discovery", "energy_gain", 
+            "collision_penalty", "stagnation_penalty", "base_points",
+            "relic_farming", "overcrowding_penalty", "total_reward"
+        ]
+        info_dict_spec = {
+            "agent_points": UnboundedContinuous(shape=torch.Size([*self.batch_size, 1]), device=self.device),
+            "opponent_points": UnboundedContinuous(shape=torch.Size([*self.batch_size, 1]), device=self.device)
+        }
+        for k in self.rc_keys:
+            info_dict_spec[f"rc_{k}"] = UnboundedContinuous(shape=torch.Size([*self.batch_size, 1]), device=self.device)
+            
         self.observation_spec = Composite({
             "agents": agents_obs_spec,
-            "info": Composite({
-                "agent_points": UnboundedContinuous(shape=torch.Size([*self.batch_size, 1]), device=self.device),
-                "opponent_points": UnboundedContinuous(shape=torch.Size([*self.batch_size, 1]), device=self.device)
-            }, shape=self.batch_size)
+            "info": Composite(info_dict_spec, shape=self.batch_size)
         }, shape=self.batch_size)
         
         self.reward_spec = Composite({
@@ -315,13 +325,13 @@ class LuxTorchRLEnv(EnvBase):
             # Mapping state history
             self.prev_points = np.zeros(self.batch_size[0], dtype=np.float32)
             self.prev_energy = np.zeros((self.batch_size[0], self.max_units), dtype=np.float32)
-            self.last_seen_map = np.zeros((self.batch_size[0], 2, self.map_width, self.map_height), dtype=np.float32)
+            self.last_seen_map = np.full((self.batch_size[0], 2, self.map_width, self.map_height), -50.0, dtype=np.float32)
             self.prev_visible_count = np.zeros(self.batch_size[0], dtype=np.int32)
             self.known_relic_mask = np.zeros((self.batch_size[0], self.max_units * 3), dtype=bool) 
             self.known_relic_pos = np.zeros((self.batch_size[0], self.max_units * 3, 2), dtype=np.int32)
             self.spawn_pos = np.zeros((self.batch_size[0], 2), dtype=np.int32)
             self.last_unit_pos = np.full((self.batch_size[0], 2, self.max_units, 2), -1, dtype=np.int32)
-            self.agent_trajectory_map = np.zeros((self.batch_size[0], 2, self.max_units, self.map_width, self.map_height), dtype=np.float32)
+            self.agent_trajectory_map = np.full((self.batch_size[0], 2, self.max_units, self.map_width, self.map_height), -50.0, dtype=np.float32)
             self.known_relic_decay_map = np.zeros((self.batch_size[0], 2, self.map_width, self.map_height), dtype=np.float32)
             self.last_point_delta = np.zeros(self.batch_size[0], dtype=np.float32)
 
@@ -397,9 +407,15 @@ class LuxTorchRLEnv(EnvBase):
                 
                 self.known_relic_mask[b_idx] = False
                 self.known_relic_pos[b_idx] = 0
-                self.agent_trajectory_map[b_idx] = 0.0
+                if hasattr(self, "last_seen_map"):
+                    self.last_seen_map[b_idx] = -50.0
+                self.agent_trajectory_map[b_idx] = -50.0
                 self.known_relic_decay_map[b_idx] = 0.0
                 self.last_point_delta[b_idx] = 0.0
+                
+                if hasattr(self, "episode_reward_components"):
+                    for k in self.episode_reward_components.keys():
+                        self.episode_reward_components[k][b_idx] = 0.0
                 
                 pos_o = self._get_v(self._get_v(new_reset_obs["player_0"], "units"), "position")
                 if pos_o is not None:
@@ -433,15 +449,20 @@ class LuxTorchRLEnv(EnvBase):
             "action_mask": torch.tensor(action_mask, device=self.device)
         }, batch_size=torch.Size([b_size, self.max_units]))
         
+        info_dict_reset = {
+            "agent_points": torch.zeros((b_size, 1), dtype=torch.float32, device=self.device),
+            "opponent_points": torch.zeros((b_size, 1), dtype=torch.float32, device=self.device)
+        }
+        if hasattr(self, "rc_keys"):
+            for k in self.rc_keys:
+                info_dict_reset[f"rc_{k}"] = torch.zeros((b_size, 1), dtype=torch.float32, device=self.device)
+                
         td = TensorDict({
             "agents": agents_td,
             "done": torch.zeros((b_size, 1), dtype=torch.bool, device=self.device),
             "terminated": torch.zeros((b_size, 1), dtype=torch.bool, device=self.device),
             "truncated": torch.zeros((b_size, 1), dtype=torch.bool, device=self.device),
-            "info": TensorDict({
-                "agent_points": torch.zeros((b_size, 1), dtype=torch.float32, device=self.device),
-                "opponent_points": torch.zeros((b_size, 1), dtype=torch.float32, device=self.device)
-            }, batch_size=torch.Size([b_size])),
+            "info": TensorDict(info_dict_reset, batch_size=torch.Size([b_size])),
         }, batch_size=torch.Size([b_size]))
         
         return td
@@ -590,6 +611,12 @@ class LuxTorchRLEnv(EnvBase):
         # Execute Shaping 
         if getattr(self, "reward_version", "v1") == "v2":
             from benchmarl.environments.lux.reward_exploration import compute_shaped_rewards_v2
+            
+            team_footprint = np.full((b_size, self.map_width, self.map_height), -50.0, dtype=np.float32)
+            if hasattr(self, "agent_trajectory_map"):
+                for b in range(b_size):
+                    team_footprint[b] = np.max(self.agent_trajectory_map[b, t_ids_np[b]], axis=0)
+            
             shaped_global, shaped_local, reward_components = compute_shaped_rewards_v2(
                 current_team_mask=current_team_mask,
                 current_team_pos=current_team_pos,
@@ -600,7 +627,8 @@ class LuxTorchRLEnv(EnvBase):
                 spawn_pos=self.spawn_pos,
                 known_relic_mask=self.known_relic_mask,
                 known_relic_pos=self.known_relic_pos,
-                step_count=steps
+                step_count=steps,
+                footprint_map=team_footprint
             )
         else:
             shaped_reward, reward_components = compute_shaped_rewards(
@@ -615,14 +643,25 @@ class LuxTorchRLEnv(EnvBase):
                 known_relic_pos=self.known_relic_pos,
                 step_count=steps
             )
-        self.last_reward_components = reward_components
-        
         for b in range(b_size):
              if getattr(self, "reward_version", "v1") == "v2":
                  # Distribute calculated team shaped-reward globally array + the local agent specific scores!
                  r_np[b, :] = (shaped_global[b] + shaped_local[b, :]) * self.reward_scaling
              else:
                  r_np[b, :] = shaped_reward[b] * self.reward_scaling
+                 
+        reward_components["total_reward"] = r_np.copy()
+        self.last_reward_components = reward_components
+        
+        if not hasattr(self, "episode_reward_components"):
+            self.episode_reward_components = {k: np.zeros(b_size, dtype=np.float32) for k in reward_components.keys()}
+        
+        for k, v in reward_components.items():
+            v_np = np.asarray(v)
+            if v_np.ndim == 2:
+                self.episode_reward_components[k] += np.sum(v_np, axis=-1)
+            else:
+                self.episode_reward_components[k] += v_np
              
         done_np = term_np | trunc_np
         
@@ -669,15 +708,21 @@ class LuxTorchRLEnv(EnvBase):
             self.max_agent_points[b] = max(self.max_agent_points[b], self.prev_points[b])
             self.max_opp_points[b] = max(self.max_opp_points[b], opp_pts_np[b])
 
+        info_dict = {
+            "agent_points": torch.tensor(self.max_agent_points, dtype=torch.float32, device=device).unsqueeze(-1).clone(),
+            "opponent_points": torch.tensor(self.max_opp_points, dtype=torch.float32, device=device).unsqueeze(-1).clone()
+        }
+        
+        if hasattr(self, "episode_reward_components"):
+            for k, v in self.episode_reward_components.items():
+                info_dict[f"rc_{k}"] = torch.tensor(v, dtype=torch.float32, device=device).unsqueeze(-1).clone()
+
         td = TensorDict({
             "agents": agents_td,
             "done": torch.tensor(done_np, device=device).unsqueeze(-1),
             "terminated": torch.tensor(term_np, device=device).unsqueeze(-1),
             "truncated": torch.tensor(trunc_np, device=device).unsqueeze(-1),
-            "info": TensorDict({
-                "agent_points": torch.tensor(self.max_agent_points, dtype=torch.float32, device=device).unsqueeze(-1).clone(),
-                "opponent_points": torch.tensor(self.max_opp_points, dtype=torch.float32, device=device).unsqueeze(-1).clone()
-            }, batch_size=torch.Size([b_size])),
+            "info": TensorDict(info_dict, batch_size=torch.Size([b_size])),
         }, batch_size=torch.Size([b_size]))
         
         # Reset trackers for the next episode where done

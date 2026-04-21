@@ -1,0 +1,20 @@
+name: cnn_lux_16ch
+
+mlp_num_cells: [256, 128]
+mlp_layer_class: torch.nn.Linear
+mlp_activation_class: torch.nn.ReLU
+mlp_activation_kwargs: null
+mlp_norm_class: null
+mlp_norm_kwargs: null
+
+cnn_num_cells: [64, 128, 128]
+# 3x3 Kernels for the three layers
+cnn_kernel_sizes: [3, 3, 3]
+# Stride of 2 in the first layer (reduces 24x24 to 12x12), then stride 1 (keeps 12x12)
+cnn_strides: [2, 1, 1]
+# Padding of 1 to avoid asymmetries and edge clipping
+cnn_paddings: [1, 1, 1]
+cnn_activation_class: torch.nn.ReLU
+cnn_activation_kwargs: null
+cnn_norm_class: null
+cnn_norm_kwargs: null
