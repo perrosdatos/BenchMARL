@@ -84,7 +84,7 @@ class LuxTorchRLEnv(EnvBase):
         self.rc_keys = [
             "fog_discovery", "novelty_bonus", "dispersion_bonus", 
             "relic_proximity", "relic_discovery", "energy_gain", 
-            "collision_penalty", "stagnation_penalty", "base_points",
+            "collision_penalty", "stagnation_penalty", "local_point_generation",
             "relic_farming", "overcrowding_penalty", "total_reward"
         ]
         info_dict_spec = {

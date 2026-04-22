@@ -151,7 +151,7 @@ def compute_shaped_rewards_v2(
     shaped_local = np.zeros((batch_size, max_units), dtype=np.float32)
     
     components = {
-        "base_points": delta_points.astype(np.float32) / 10.0,
+        "local_point_generation": np.zeros((batch_size, max_units), dtype=np.float32),
         "relic_discovery": np.zeros(batch_size, dtype=np.float32),
         "fog_discovery": np.zeros(batch_size, dtype=np.float32),
         
@@ -234,6 +234,27 @@ def compute_shaped_rewards_v2(
                 for u_idx in eligible_farmers:
                     components["relic_farming"][b, u_idx] = dist_pts / 16.0
 
+            # 5x5 Area of Influence for points distribution
+            if delta_points[b] > 0:
+                agents_in_5x5 = []
+                for u_idx in valid_indices:
+                    ux, uy = current_team_pos[b, u_idx]
+                    if ux < 0: continue
+                    # Check if within Chebyshev distance 2 of ANY seen relic (5x5 grid)
+                    in_range = False
+                    for r_idx in range(len(relic_coords)):
+                        rx, ry = relic_coords[r_idx]
+                        if max(abs(rx - ux), abs(ry - uy)) <= 2:
+                            in_range = True
+                            break
+                    if in_range:
+                        agents_in_5x5.append(u_idx)
+                        
+                if len(agents_in_5x5) > 0:
+                    dist_pts = float(delta_points[b]) / float(len(agents_in_5x5))
+                    for u_idx in agents_in_5x5:
+                        components["local_point_generation"][b, u_idx] = dist_pts
+
             # Note: Global discovery (Normalized assuming ~6 max relics, / 6.0)
             components["relic_discovery"][b] = float(len(seen_relic_indices)) / 6.0
 
@@ -277,13 +298,13 @@ def compute_shaped_rewards_v2(
 
         # Final reward summation (Multipliers act as tunable Hyper-Parameters here)
         shaped_global[b] = (
-            components["base_points"][b] * 20.0 +
             components["relic_discovery"][b] * 1.5 +
             components["fog_discovery"][b] * 1.0
         )
         
         for u_idx in range(max_units):
             shaped_local[b, u_idx] = (
+                components["local_point_generation"][b, u_idx] * 32.0 + # Massively increased localized priority!
                 components["collision_penalty"][b, u_idx] * 8.0 +  # Compensated multiplier due to strict normalization
                 components["dispersion_bonus"][b, u_idx] * (3.0 if len(seen_relic_indices) == 0 else 1.0) + # Reward spreading out!
                 components["novelty_bonus"][b, u_idx] * 2.0 +       # Massively reward stepping on forgotten/unseen tiles

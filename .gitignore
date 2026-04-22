@@ -182,3 +182,4 @@ qmix_match_cnn*/
 pull_*.patch
 reward_distribution.csv
 test_render_lux.png
+mappo_match_*

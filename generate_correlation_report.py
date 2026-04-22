@@ -27,7 +27,7 @@ def main():
 
     # 2. Weights definition based on reward_exploration.py
     weights = {
-        "base_points": 20.0,
+        "local_point_generation": 32.0,
         "relic_discovery": 1.5,
         "fog_discovery": 1.0,
         "collision_penalty": 8.0,

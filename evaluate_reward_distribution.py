@@ -110,7 +110,7 @@ def main():
     print(f"Saved {len(df)} steps to {csv_file}")
     
     print("\n--- Distribution Analysis ---")
-    metrics = ["reward_per_agent", "base_points", "collision_penalty", 
+    metrics = ["reward_per_agent", "local_point_generation", "collision_penalty", 
                "relic_proximity", "relic_discovery", "energy_gain", "stagnation_penalty", "movement_bonus"]
     
     for metric in metrics:

@@ -137,7 +137,8 @@ def run_evaluation(version):
                 "total_shaped_reward": float(t_reward[b]),
                 "active_units_count": int(active_counts[b]),
                 "current_team_points": float(team_pts[b]),
-                "base_points": float(np.sum(comp["base_points"][b])),
+                "base_points": float(np.sum(comp["base_points"][b])) if "base_points" in comp else 0.0,
+                "local_point_generation": float(np.sum(comp["local_point_generation"][b])) if "local_point_generation" in comp else 0.0,
                 "collision_penalty": float(np.sum(comp["collision_penalty"][b])),
                 "diagonal_bonus": float(np.sum(comp["diagonal_bonus"][b])) if "diagonal_bonus" in comp else 0.0,
                 "dispersion_bonus": float(np.sum(comp["dispersion_bonus"][b])) if "dispersion_bonus" in comp else 0.0,
@@ -269,7 +270,7 @@ def generate_report(df, version):
                             title="Global Total Shaped Reward Distribution (100 Envs)",
                             color_discrete_sequence=["#FF4B4B"], template="plotly_dark")
     
-    comp_cols = ["base_points", "relic_discovery", "relic_farming", "fog_discovery", "energy_gain", "collision_penalty", 
+    comp_cols = ["base_points", "local_point_generation", "relic_discovery", "relic_farming", "fog_discovery", "energy_gain", "collision_penalty", 
                  "stagnation_penalty", "diagonal_bonus", "dispersion_bonus", "overcrowding_penalty", "movement_bonus", "novelty_bonus", "relic_proximity"]
     df_melt = df.melt(id_vars=["step", "env_id"], value_vars=comp_cols, var_name="Component", value_name="Value")
     f_comp = px.box(df_melt, x="Component", y="Value", color="Component", 
@@ -331,7 +332,7 @@ def generate_report(df, version):
     
     ag_html = f"<div class='plot-box full'>{f_agents.to_html(full_html=False, include_plotlyjs=False)}</div>"
     
-    comp_cols = ["base_points", "relic_farming", "energy_gain", "collision_penalty", 
+    comp_cols = ["base_points", "local_point_generation", "relic_farming", "energy_gain", "collision_penalty", 
                  "stagnation_penalty", "diagonal_bonus", "dispersion_bonus", "overcrowding_penalty", "movement_bonus", "novelty_bonus", "relic_proximity"]
 
     for comp in comp_cols:
