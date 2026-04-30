@@ -183,3 +183,10 @@ pull_*.patch
 reward_distribution.csv
 test_render_lux.png
 mappo_match_*
+
+# Temporary logs and scripts
+mem_log*.txt
+test_mem*.sh
+outputs.zip
+local-data/
+reports/
