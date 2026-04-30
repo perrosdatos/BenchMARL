@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import importlib
 
+import gc
 import os
 import pickle
 import shutil
@@ -817,6 +818,17 @@ class Experiment(CallbackNotifier):
                 self._save_experiment()
             pbar.update()
 
+            # Explicit memory cleanup
+            if 'batch' in locals():
+                del batch
+            if 'group_batch' in locals():
+                del group_batch
+            if 'training_td' in locals():
+                del training_td
+            if 'training_tds' in locals():
+                del training_tds
+            gc.collect()
+
         if self.config.checkpoint_at_end:
             self._save_experiment()
         self.close()
@@ -968,6 +980,13 @@ class Experiment(CallbackNotifier):
         )
         # Callback
         self._on_evaluation_end(rollouts)
+
+        # Explicit memory cleanup
+        del rollouts
+        if video_frames is not None:
+            del video_frames
+        gc.collect()
+        torch.cuda.empty_cache()
 
     # Saving experiment state
     def state_dict(self) -> OrderedDict:
