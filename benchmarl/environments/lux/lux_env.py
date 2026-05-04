@@ -485,7 +485,7 @@ class LuxTorchRLEnv(EnvBase):
         jax_actions_1 = np.zeros_like(action_3d)
         
         if getattr(self, "reward_version", "v1") == "v2" and getattr(self, "rulebased_agent_class", None) is not None:
-            print("[FATAL WARNING] THE NATIVE RULE-BASED AGENT IS RUNNING!")
+            #print("[FATAL WARNING] THE NATIVE RULE-BASED AGENT IS RUNNING!")
             self.opp_actions = np.zeros((b_size, self.max_units), dtype=np.int32)
             steps_val = np.asarray(self._get_v(self.jax_obs["player_0"], "steps"))
             for b in range(b_size):
