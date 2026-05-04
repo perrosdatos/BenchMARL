@@ -485,6 +485,7 @@ class LuxTorchRLEnv(EnvBase):
         jax_actions_1 = np.zeros_like(action_3d)
         
         if getattr(self, "reward_version", "v1") == "v2" and getattr(self, "rulebased_agent_class", None) is not None:
+            print("[FATAL WARNING] THE NATIVE RULE-BASED AGENT IS RUNNING!")
             self.opp_actions = np.zeros((b_size, self.max_units), dtype=np.int32)
             steps_val = np.asarray(self._get_v(self.jax_obs["player_0"], "steps"))
             for b in range(b_size):
@@ -742,12 +743,14 @@ class LuxTorchRLEnv(EnvBase):
         state_unbatched = jax.tree_util.tree_map(lambda x: np.asarray(x[0]), self.env_state)
         
         import pygame
+        from pygame import surfarray
         # Initialize bare minimum for headless rendering
-        if not pygame.get_init():
-            pygame.init()
-            pygame.display.init()
-            pygame.font.init()
-            pygame.display.set_mode((1, 1), flags=pygame.HIDDEN)
+        if getattr(self.raw_env.renderer, "screen", None) is None:
+            if not pygame.get_init():
+                pygame.init()
+                pygame.display.init()
+                pygame.font.init()
+                pygame.display.set_mode((1, 1), flags=pygame.HIDDEN)
             self.raw_env.renderer.display_options = {
                 "show_grid": True,
                 "show_relic_spots": False,
